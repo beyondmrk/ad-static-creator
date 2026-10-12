@@ -1,0 +1,11 @@
+{
+  "name": "daily-12",
+  "about": "A daily competitor-ad team workflow: one product per day, 12 ads, at least 4 competitor ads provided by the team's product researcher, the rest researched (Meta Ad Library, reach over 10,000, same product or same niche). Delivery to the team's Drive folder following its Example folder, Status Sheet set to Ready for Review, a message in the team chat. Copy to profiles/local/<client>.json and adjust.",
+  "set_size": 12,
+  "provided_min": 4,
+  "min_reach": 10000,
+  "require_niche_note": true,
+  "delivery_pattern": "{code}-S{set}-A{n}",
+  "status_value": "Ready for Review",
+  "notify_template": "Hi team! I've finished the {count} ads for {product}. Everything has been uploaded to Drive, and the Status Sheet is updated to Ready for Review."
+}
