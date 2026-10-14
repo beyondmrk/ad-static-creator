@@ -1,2 +1,2 @@
-Pillow>=10
+Pillow>=10.1
 rapidocr_onnxruntime>=1.3

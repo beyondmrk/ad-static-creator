@@ -1,0 +1,3 @@
+[submodule "flow-mcp"]
+	path = flow-mcp
+	url = https://github.com/beyondmrk/flow-mcp

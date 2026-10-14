@@ -1,29 +1,35 @@
-"""ad-localize: 1:1 competitor-ad localization, recreated in Google Flow.
+"""ad-static-creator: competitor static ads recreated 1:1 for our product, optionally localized.
 
-  python adloc.py init    <job> --client K --code SE-210 --lang Dutch --market Netherlands
-                                --product "Name" [--product-image p.png] [--competitor "Brand"]
+  python adloc.py init    <job> --code AB-12 --product "Name" [--lang Dutch --market Netherlands]
+                                [--engine flow|higgsfield] [--hf-login NAME --hf-workspace ID]
+                                [--product-image p.png] [--competitor "Brand"]
                                 [--currency € --price "€39,95" --offer "..." --guarantee "..."]
                                 [--profile profiles/daily-12.json]
   python adloc.py fetch   <job> <urls.json>      # -> 01_originals + sources.json + links file
   python adloc.py scan    <job>                  # set rules + dedupe + ads.json skeleton
   python adloc.py build   <job> [--spell 03] [--allow-short]
-  python adloc.py finish  <job> [--pick 03=alt2] # Flow stills -> crop -> 02_localized + text check
+  python hf.py fire <job>  |  uv run --directory flow-mcp python ../flow_run.py <job>
+  python adloc.py finish  <job> [--pick 03=alt2] # stills -> crop -> 02_localized + text check
+  python adloc.py review  <job>                  # original | ours, one side-by-side sheet
   python adloc.py deliver <job> [--set 1 --start 1] [--only 03 --suffix v2] [--upload "remote:dir"]
+  python adloc.py doctor  [<job>]                # setup check
 
-<job> must sit under flow-mcp's work_root (the bridge refuses paths outside it).
-Set FLOW_WORK_ROOT to that same folder and `init` enforces it.
-The prompt is ASSEMBLED here from ads.json; nobody hand-writes a Flow prompt.
+No --lang = 1:1 mode: the text stays in the original language; only our product, brand, price,
+offer, guarantee and market references change. Flow jobs must sit under flow-mcp's work_root
+(set FLOW_WORK_ROOT to it and `init` enforces it).
+The prompt is ASSEMBLED here from ads.json; nobody hand-writes a generation prompt.
 """
 import argparse, difflib, json, math, os, re, shutil, subprocess, sys, unicodedata
 import urllib.request
 from pathlib import Path
 
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from clean import IMG, VID, clean, leftovers
 
 HERE = Path(__file__).resolve().parent
-FLOW_ASPECTS = {"1:1": 1.0, "3:4": 0.75, "4:3": 4 / 3, "9:16": 9 / 16, "16:9": 16 / 9}
+ASPECTS = {"flow": ("1:1", "3:4", "4:3", "9:16", "16:9"),
+           "higgsfield": ("1:1", "3:2", "2:3", "4:3", "3:4", "4:5", "5:4", "9:16", "16:9", "21:9")}
 DUP_BITS = 70  # dHash Hamming distance (of 256) at or below = same creative
 DEFAULT_PROFILE = {"set_size": 0, "provided_min": 0, "min_reach": 0, "require_niche_note": False,
                    "delivery_pattern": "{code}-S{set}-A{n}", "status_value": "", "notify_template": ""}
@@ -66,10 +72,22 @@ def originals(job):
                    if p.suffix.lower() in IMG and not p.stem.startswith("product")), key=natural)
 
 
-def flow_aspect(w, h):
+def ratio(aspect):
+    w, h = aspect.split(":")
+    return int(w) / int(h)
+
+
+def pick_aspect(w, h, engine):
     r = w / h
-    name = min(FLOW_ASPECTS, key=lambda k: abs(math.log(FLOW_ASPECTS[k] / r)))
-    return name, abs(FLOW_ASPECTS[name] / r - 1) > 0.02  # (aspect, needs pad/crop)
+    name = min(ASPECTS[engine], key=lambda k: abs(math.log(ratio(k) / r)))
+    return name, abs(ratio(name) / r - 1) > 0.02  # (aspect, needs pad/crop)
+
+
+def newest(s):
+    """The newest take of a localized ad: s itself or its highest _vN sibling."""
+    takes = [s] + [p for p in s.parent.glob(f"{s.stem}_v*{s.suffix}")
+                   if re.fullmatch(rf"{re.escape(s.stem)}_v\d+", p.stem)]
+    return max(takes, key=lambda p: int(re.search(r"_v(\d+)$", p.stem).group(1)) if p is not s else 1)
 
 
 def dhash(path):
@@ -82,15 +100,19 @@ def dhash(path):
 def cmd_init(a):
     job = Path(a.job).resolve()
     root = os.environ.get("FLOW_WORK_ROOT")
-    if root and not job.is_relative_to(Path(root).resolve()):
-        sys.exit(f"job folder must live under FLOW_WORK_ROOT ({root}), flow-mcp's path fence")
-    if not root:
-        print("NOTE: FLOW_WORK_ROOT not set - make sure the job sits under flow-mcp's work_root")
+    if a.engine == "flow":
+        if root and not job.is_relative_to(Path(root).resolve()):
+            sys.exit(f"job folder must live under FLOW_WORK_ROOT ({root}), flow-mcp's path fence")
+        if not root:
+            print("NOTE: FLOW_WORK_ROOT not set - make sure the job sits under flow-mcp's work_root")
+    elif not (a.hf_login and a.hf_workspace):
+        sys.exit("--engine higgsfield needs --hf-login and --hf-workspace (python hf.py status lists them)")
     if (job / "brief.json").exists():
         sys.exit(f"brief.json already exists in {job} - edit it, never re-init")
     for d in ("01_originals", "02_localized", "03_delivery", "Elements/Stills", "Elements/_refs"):
         (job / d).mkdir(parents=True, exist_ok=True)
-    brief = {"client": a.client, "code": a.code.upper(), "lang": a.lang, "market": a.market,
+    brief = {"code": a.code.upper(), "lang": a.lang or "", "market": a.market or "",
+             "engine": a.engine, "hf_login": a.hf_login or "", "hf_workspace": a.hf_workspace or "",
              "product": a.product, "competitor": a.competitor or "", "product_image": "",
              "currency": a.currency or "", "price": a.price or "", "offer": a.offer or "",
              "guarantee": a.guarantee or "", "profile": a.profile or ""}
@@ -102,7 +124,8 @@ def cmd_init(a):
         shutil.copy2(src, dst)
         brief["product_image"] = dst.name
     save(job / "brief.json", brief)
-    print(f"job ready: {job}")
+    print(f"job ready: {job}  ({a.engine}, "
+          + (f"localized to {a.lang})" if a.lang else "1:1 in the original language)"))
 
 
 def cmd_fetch(a):
@@ -132,7 +155,7 @@ def cmd_fetch(a):
 
 
 def set_problems(job, brief):
-    """The client's set rules (profile): size, provided minimum, reach floor, niche note, links."""
+    """The team's set rules (profile): size, provided minimum, reach floor, niche note, links."""
     prof = profile(job, brief)
     srcs = load(job / "sources.json") if (job / "sources.json").exists() else {}
     names = [f.stem for f in originals(job)]
@@ -170,15 +193,15 @@ def cmd_scan(a):
     ads = load(path) if path.exists() else {}
     for f in files:
         w, h = Image.open(f).size
-        asp, pad = flow_aspect(w, h)
-        ads.setdefault(f.name, {"size": [w, h], "flow_aspect": asp, "padded": pad,
+        asp, pad = pick_aspect(w, h, brief.get("engine", "flow"))
+        ads.setdefault(f.name, {"size": [w, h], "aspect": asp, "padded": pad,
                                 "has_text": None, "has_product": None, "scene": "",
                                 "texts": [], "swaps": []})
     save(path, ads)
     print(f"{len(files)} originals -> {path.name}")
     for f in files:
         e = ads[f.name]
-        print(f"  {f.name:32} {e['size'][0]}x{e['size'][1]}  flow {e['flow_aspect']}"
+        print(f"  {f.name:32} {e['size'][0]}x{e['size'][1]}  {brief.get('engine', 'flow')} {e['aspect']}"
               + ("  (pad + crop back)" if e["padded"] else ""))
     for f, g, d in dups:
         print(f"  DUPLICATE? {f} ~ {g} (dHash {d}/256) - replace one before build")
@@ -190,7 +213,7 @@ def cmd_scan(a):
 def pad_ref(src, dst, asp):
     im = Image.open(src).convert("RGB")
     w, h = im.size
-    r = FLOW_ASPECTS[asp]
+    r = ratio(asp)
     W, H = (w, round(w / r)) if r < w / h else (round(h * r), h)
     bg = im.resize((W, H), Image.LANCZOS).filter(ImageFilter.GaussianBlur(max(W, H) // 25))
     bg.paste(im, ((W - w) // 2, (H - h) // 2))
@@ -208,10 +231,13 @@ def prompt_for(e, brief, bands, spell):
     out = [e["scene"].strip()]
     changes = []
     if e["has_text"]:
-        out.append(f"On-image text, in {lang}, each in the same position, size, colour and font "
-                   "as the original:")
+        out.append(f"On-image text, in {lang or 'the same language as the original'}, each in the same "
+                   "position, size, colour and font as the original:")
         out += [f'- {t["where"]}: "{t["target"]}"' for t in e["texts"]]
-        changes.append(f"the text (now native {lang}, exactly as listed)")
+        if lang:
+            changes.append(f"the text (now native {lang}, exactly as listed)")
+        elif any(t["target"] != t["source"] for t in e["texts"]):
+            changes.append("the text (exactly as listed)")
     for s in e.get("swaps", []):
         out.append(f"Replace {s['from']} with {s['to']}.")
     if e.get("swaps"):
@@ -230,8 +256,8 @@ def prompt_for(e, brief, bands, spell):
         out.append("Copy the first reference image 1:1. Keep it identical: same subject, "
                    "composition, framing, colours and lighting.")
     if e["has_text"]:
-        out.append(f"Spell every {lang} word and every number exactly as written above, with "
-                   f"correct {lang} characters.")
+        out.append("Spell every word and every number exactly as written above, with "
+                   + (f"correct {lang} characters." if lang else "the original's characters and accents."))
         if spell:
             out.append("Spelling, letter by letter: "
                        + spelled(" ".join(t["target"] for t in e["texts"])) + ".")
@@ -260,7 +286,7 @@ def ad_problems(name, e, brief):
         errs.append(f"{name}: scene is empty (describe the original as it is)")
     if e["has_text"] and not e["texts"]:
         errs.append(f"{name}: has_text but no texts")
-    ours = nums(" ".join(brief[k] for k in ("price", "offer", "guarantee")))
+    ours = [n for k in ("price", "offer", "guarantee") for n in nums(brief[k])]  # per field: a join would merge "29,95 2+1"
     for t in e["texts"]:
         kind = t.get("kind", "copy")
         if not t.get("source", "").strip() or not t.get("target", "").strip() or not t.get("where"):
@@ -269,6 +295,9 @@ def ad_problems(name, e, brief):
         if kind not in KINDS:
             errs.append(f"{name}: kind {kind!r} - use one of {sorted(KINDS)}")
             continue
+        if kind == "copy" and not brief["lang"] and t["target"].strip() != t["source"].strip():
+            errs.append(f"{name}: 1:1 mode (no --lang) keeps copy verbatim - target must equal "
+                        f"source {t['source']!r}")
         if kind in ("copy", "brand") and OFFER_RE.search(t["source"]):
             errs.append(f"{name}: {t['source']!r} looks like a price/discount/bundle - set kind to "
                         "price, offer or guarantee")
@@ -317,13 +346,14 @@ def cmd_build(a):
             continue
         nn = name[:2]
         ref = refs / f"ref_{nn}.png"
-        bands = pad_ref(job / "01_originals" / name, ref, e["flow_aspect"]) if e["padded"] else None
+        bands = pad_ref(job / "01_originals" / name, ref, e["aspect"]) if e["padded"] else None
         if not bands:
             Image.open(job / "01_originals" / name).convert("RGB").save(ref)
         r = [str(ref.resolve())] + ([str(prod_ref.resolve())] if e["has_product"] else [])
-        prompts.append({"line": nn, "source": name, "aspect": e["flow_aspect"], "refs": r,
+        prompts.append({"line": nn, "source": name, "aspect": e["aspect"], "refs": r,
                         "prompt": prompt_for(e, brief, bands, nn in spell)})
-    save(job / "prompts.json", {"slug": brief["code"].lower(), "project_dir": str(job.resolve()),
+    save(job / "prompts.json", {"engine": brief.get("engine", "flow"), "slug": brief["code"].lower(),
+                                "project_dir": str(job.resolve()),
                                 "lines": prompts})
     print(f"{len(prompts)} prompts -> prompts.json (slug {brief['code'].lower()})")
 
@@ -369,7 +399,7 @@ def cmd_finish(a):
         pat = re.compile(rf"_line0*{int(nn)}" + (rf"_{want}" if want else "") + r"\.png$")
         hit = [s for s in stills if pat.search(s.name)]
         if len(hit) != 1:
-            print(f"  {nn}: {len(hit)} Flow still(s) match - expected 1" + (" (use --pick)" if hit else ""))
+            print(f"  {nn}: {len(hit)} still(s) match - expected 1" + (" (use --pick)" if hit else ""))
             bad += 1
             continue
         im = Image.open(hit[0]).convert("RGB")
@@ -422,11 +452,6 @@ def cmd_deliver(a):
     src = sorted(base.values(), key=natural)
     numbered = [(a.start + i, s) for i, s in enumerate(src)]
     if a.only:  # feedback fixes: just these ads, original numbers, their NEWEST take
-        def newest(s):
-            takes = [s] + [p for p in (job / "02_localized").glob(f"{s.stem}_v*{s.suffix}")
-                           if re.fullmatch(rf"{re.escape(s.stem)}_v\d+", p.stem)]
-            return max(takes, key=lambda p: int(re.search(r"_v(\d+)$", p.stem).group(1))
-                       if p is not s else 1)
         numbered = [(n, s if s.name in a.use else newest(s)) for n, s in numbered
                     if s.name[:2] in {o.zfill(2) for o in a.only}]
     checks = load(job / "_finish.json") if (job / "_finish.json").exists() else {}
@@ -479,15 +504,86 @@ def cmd_deliver(a):
               + prof["notify_template"].format(count=len(plan), product=brief["product"]))
 
 
+# ---------------------------------------------------------------------------- review / doctor
+def cmd_review(a):
+    job = Path(a.job)
+    ads = load(job / "ads.json")
+    checks = load(job / "_finish.json") if (job / "_finish.json").exists() else {}
+    H, font = 480, ImageFont.load_default(18)
+    rows = []
+    for name, e in ads.items():
+        base = job / "02_localized" / f"{Path(name).stem}.png"
+        if e.get("skip") or not base.exists():
+            continue
+        ours = newest(base)
+        pair = [Image.open(p).convert("RGB") for p in (job / "01_originals" / name, ours)]
+        pair = [im.resize((round(im.width * H / im.height), H), Image.LANCZOS) for im in pair]
+        flags = checks.get(ours.name)
+        rows.append((f"{name}  |  {ours.name}" + (f"   CHECK: {' | '.join(flags)}" if flags else ""), pair))
+    if not rows:
+        sys.exit("nothing to review - run finish first")
+    sheet = Image.new("RGB", (max(p[0].width + p[1].width for _, p in rows) + 30,
+                              len(rows) * (H + 44)), "white")
+    d = ImageDraw.Draw(sheet)
+    for i, (label, (orig, ours)) in enumerate(rows):
+        y = i * (H + 44)
+        d.text((10, y + 10), label, fill="red" if "CHECK" in label else "black", font=font)
+        sheet.paste(orig, (10, y + 36))
+        sheet.paste(ours, (20 + orig.width, y + 36))
+    out = job / "review.png"
+    sheet.save(out)
+    print(f"{len(rows)} ads, original left, ours right -> {out}")
+
+
+def cmd_doctor(a):
+    bad = []
+
+    def row(good, what, fix=""):
+        print(f"  {'ok' if good else 'NO'}  {what}" + ("" if good else f"   -> {fix}"))
+        if not good:
+            bad.append(what)
+    for mod in ("PIL", "rapidocr_onnxruntime"):
+        try:
+            __import__(mod)
+            row(True, mod)
+        except ImportError:
+            row(False, mod, "pip install -r requirements.txt")
+    for tool, why in (("rclone", "uploads"), ("ffmpeg", "video ads")):
+        print(f"  {'ok' if shutil.which(tool) else '--'}  {tool} (optional, {why})")
+    brief = load(Path(a.job) / "brief.json") if a.job else {}
+    engines = [brief.get("engine", "flow")] if brief else ["flow", "higgsfield"]
+    if "flow" in engines:
+        print("flow:")
+        src = Path(os.environ.get("FLOW_MCP_DIR", HERE / "flow-mcp")) / "src" / "flow_mcp"
+        row(src.is_dir(), "flow-mcp bridge", "git submodule update --init (or set FLOW_MCP_DIR)")
+        row(bool(shutil.which("uv")), "uv (runs the bridge)", "install uv: https://docs.astral.sh/uv/")
+        root = os.environ.get("FLOW_WORK_ROOT")
+        row(bool(root), "FLOW_WORK_ROOT", "set it to flow-mcp's work_root")
+        if root and a.job:
+            row(Path(a.job).resolve().is_relative_to(Path(root).resolve()), "job under FLOW_WORK_ROOT",
+                "move the job folder inside it")
+    if "higgsfield" in engines:
+        print("higgsfield:")
+        import hf
+        row(bool(shutil.which(hf.HF)), "higgsfield CLI", "npm install -g @higgsfield/cli")
+        if brief:
+            problem = hf.check(brief["hf_login"], brief["hf_workspace"])
+            row(not problem, f"login {brief['hf_login']} on workspace {brief['hf_workspace']}", problem)
+        else:
+            print("      logins: python hf.py status")
+    sys.exit(1 if bad else 0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init"); p.add_argument("job")
-    for f in ("--client", "--code", "--lang", "--market", "--product"):
+    for f in ("--code", "--product"):
         p.add_argument(f, required=True)
-    for f in ("--product-image", "--competitor", "--currency", "--price", "--offer", "--guarantee",
-              "--profile"):
+    for f in ("--lang", "--market", "--product-image", "--competitor", "--currency", "--price",
+              "--offer", "--guarantee", "--profile", "--hf-login", "--hf-workspace"):
         p.add_argument(f)
+    p.add_argument("--engine", choices=sorted(ASPECTS), default="flow")
     p = sub.add_parser("fetch"); p.add_argument("job"); p.add_argument("urls")
     p = sub.add_parser("scan"); p.add_argument("job")
     p = sub.add_parser("build"); p.add_argument("job"); p.add_argument("--spell", nargs="*", default=[])
@@ -500,9 +596,11 @@ def main():
     p.add_argument("--accept", nargs="*", default=[], help="NN of flagged ads the user accepted")
     p.add_argument("--upload"); p.add_argument("--use", nargs="*", default=[],
                                                help="deliver these _vN takes instead of the base")
+    p = sub.add_parser("review"); p.add_argument("job")
+    p = sub.add_parser("doctor"); p.add_argument("job", nargs="?")
     a = ap.parse_args()
-    {"init": cmd_init, "fetch": cmd_fetch, "scan": cmd_scan, "build": cmd_build,
-     "finish": cmd_finish, "deliver": cmd_deliver}[a.cmd](a)
+    {"init": cmd_init, "fetch": cmd_fetch, "scan": cmd_scan, "build": cmd_build, "finish": cmd_finish,
+     "review": cmd_review, "deliver": cmd_deliver, "doctor": cmd_doctor}[a.cmd](a)
 
 
 if __name__ == "__main__":
