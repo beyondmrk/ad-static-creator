@@ -28,6 +28,8 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from clean import IMG, VID, clean, leftovers
 
 HERE = Path(__file__).resolve().parent
+FLOW_DIR = Path(os.environ.get("FLOW_MCP_DIR", HERE / "flow-mcp"))
+JOBS = Path.home() / "ad-static-jobs"  # Higgsfield jobs, and Flow's default work_root
 ASPECTS = {"flow": ("1:1", "3:4", "4:3", "9:16", "16:9"),
            "higgsfield": ("1:1", "3:2", "2:3", "4:3", "3:4", "4:5", "5:4", "9:16", "16:9", "21:9")}
 DUP_BITS = 70  # dHash Hamming distance (of 256) at or below = same creative
@@ -98,15 +100,16 @@ def dhash(path):
 
 # ---------------------------------------------------------------------------- init / fetch / scan
 def cmd_init(a):
-    job = Path(a.job).resolve()
-    root = os.environ.get("FLOW_WORK_ROOT")
-    if a.engine == "flow":
-        if root and not job.is_relative_to(Path(root).resolve()):
-            sys.exit(f"job folder must live under FLOW_WORK_ROOT ({root}), flow-mcp's path fence")
-        if not root:
-            print("NOTE: FLOW_WORK_ROOT not set - make sure the job sits under flow-mcp's work_root")
-    elif not (a.hf_login and a.hf_workspace):
+    job, root = Path(a.job), work_root()
+    if not job.is_absolute():  # a bare code lands where the engine can reach it
+        job = (root if a.engine == "flow" and root else JOBS) / job
+    job = job.resolve()
+    if a.engine == "higgsfield" and not (a.hf_login and a.hf_workspace):
         sys.exit("--engine higgsfield needs --hf-login and --hf-workspace (python hf.py status lists them)")
+    bad = [f"{what} -> {fix}" for ok, what, fix in
+           checks(a.engine, {"hf_login": a.hf_login, "hf_workspace": a.hf_workspace}, job) if not ok]
+    if bad:
+        sys.exit("init refused, this machine is not ready:\n  " + "\n  ".join(bad))
     if (job / "brief.json").exists():
         sys.exit(f"brief.json already exists in {job} - edit it, never re-init")
     for d in ("01_originals", "02_localized", "03_delivery", "Elements/Stills", "Elements/_refs"):
@@ -535,42 +538,71 @@ def cmd_review(a):
     print(f"{len(rows)} ads, original left, ours right -> {out}")
 
 
-def cmd_doctor(a):
-    bad = []
+def work_root():
+    """flow-mcp's path fence: $FLOW_WORK_ROOT, else work_root in the bridge's config.toml."""
+    if os.environ.get("FLOW_WORK_ROOT"):
+        return Path(os.environ["FLOW_WORK_ROOT"]).resolve()
+    cfg = FLOW_DIR / "config.toml"
+    if not cfg.exists():
+        return None
+    import tomllib
+    root = tomllib.loads(cfg.read_text(encoding="utf-8")).get("work_root")
+    return Path(root).resolve() if root else None
 
-    def row(good, what, fix=""):
-        print(f"  {'ok' if good else 'NO'}  {what}" + ("" if good else f"   -> {fix}"))
-        if not good:
-            bad.append(what)
+
+def runs(*cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def checks(engine, brief=None, job=None):
+    """(ok, what, fix) rows: what `engine` needs on this machine, and for this job when given."""
+    rows = []
     for mod in ("PIL", "rapidocr_onnxruntime"):
         try:
             __import__(mod)
-            row(True, mod)
+            rows.append((True, mod, ""))
         except ImportError:
-            row(False, mod, "pip install -r requirements.txt")
+            rows.append((False, mod, "python install.py"))
+    if engine == "flow":
+        root = work_root()
+        rows += [((FLOW_DIR / "src" / "flow_mcp").is_dir(), "flow-mcp bridge", "python install.py"),
+                 ((FLOW_DIR / ".venv").is_dir(), "flow-mcp environment", "python install.py"),
+                 (root is not None, "Flow work_root (flow-mcp/config.toml)", "python install.py")]
+        if root and job:
+            rows.append((Path(job).resolve().is_relative_to(root), f"job inside {root}",
+                         "init the job by its code alone, it lands there"))
+        return rows
+    import hf
+    cli = runs(hf.HF, "version")
+    rows.append((cli, "higgsfield CLI", "python install.py"))
+    logins = [p.name for p in hf.LOGINS.iterdir() if p.is_dir() and hf.NAME_RE.match(p.name)] \
+        if hf.LOGINS.is_dir() else []
+    want = (brief or {}).get("hf_login")
+    if not want:
+        rows.append((bool(logins), f"a Higgsfield login ({', '.join(logins) or 'none'})", "python hf.py add <name>"))
+    elif want not in logins:
+        rows.append((False, f"Higgsfield login {want}", f"python hf.py add {want}"))
+    elif cli:
+        problem = hf.check(want, brief["hf_workspace"])
+        rows.append((not problem, f"login {want} on workspace {brief['hf_workspace']}", problem))
+    return rows
+
+
+def cmd_doctor(a):
+    brief = load(Path(a.job) / "brief.json") if a.job else {}
+    engines = [brief.get("engine", "flow")] if brief else [a.engine] if a.engine else list(ASPECTS)
+    bad = 0
+    for eng in engines:
+        print(f"{eng}:")
+        for ok, what, fix in checks(eng, brief or None, a.job):
+            print(f"  {'ok' if ok else 'NO'}  {what}" + ("" if ok else f"   -> {fix}"))
+            bad += not ok
     for tool, why in (("rclone", "uploads"), ("ffmpeg", "video ads")):
         print(f"  {'ok' if shutil.which(tool) else '--'}  {tool} (optional, {why})")
-    brief = load(Path(a.job) / "brief.json") if a.job else {}
-    engines = [brief.get("engine", "flow")] if brief else ["flow", "higgsfield"]
-    if "flow" in engines:
-        print("flow:")
-        src = Path(os.environ.get("FLOW_MCP_DIR", HERE / "flow-mcp")) / "src" / "flow_mcp"
-        row(src.is_dir(), "flow-mcp bridge", "git submodule update --init (or set FLOW_MCP_DIR)")
-        row(bool(shutil.which("uv")), "uv (runs the bridge)", "install uv: https://docs.astral.sh/uv/")
-        root = os.environ.get("FLOW_WORK_ROOT")
-        row(bool(root), "FLOW_WORK_ROOT", "set it to flow-mcp's work_root")
-        if root and a.job:
-            row(Path(a.job).resolve().is_relative_to(Path(root).resolve()), "job under FLOW_WORK_ROOT",
-                "move the job folder inside it")
-    if "higgsfield" in engines:
-        print("higgsfield:")
-        import hf
-        row(bool(shutil.which(hf.HF)), "higgsfield CLI", "npm install -g @higgsfield/cli")
-        if brief:
-            problem = hf.check(brief["hf_login"], brief["hf_workspace"])
-            row(not problem, f"login {brief['hf_login']} on workspace {brief['hf_workspace']}", problem)
-        else:
-            print("      logins: python hf.py status")
+    print("READY" if not bad else f"NOT READY: {bad} problem(s) - run python install.py")
     sys.exit(1 if bad else 0)
 
 
@@ -598,6 +630,7 @@ def main():
                                                help="deliver these _vN takes instead of the base")
     p = sub.add_parser("review"); p.add_argument("job")
     p = sub.add_parser("doctor"); p.add_argument("job", nargs="?")
+    p.add_argument("--engine", choices=sorted(ASPECTS))
     a = ap.parse_args()
     {"init": cmd_init, "fetch": cmd_fetch, "scan": cmd_scan, "build": cmd_build, "finish": cmd_finish,
      "review": cmd_review, "deliver": cmd_deliver, "doctor": cmd_doctor}[a.cmd](a)

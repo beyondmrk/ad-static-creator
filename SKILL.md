@@ -53,6 +53,7 @@ Each login is a folder under `~/.hf-logins/<name>`; the CLI runs with that folde
 
 ## Checklist (one job = one product's set of ads)
 
+0. **Setup check, every job.** Run `python adloc.py doctor` (add `--engine flow` or `--engine higgsfield` when known). On any `NO`, run `python install.py` yourself: it installs and configures everything and is safe to re-run. The only things it cannot do are sign-ins (Google in the Flow window, Higgsfield in the browser); for those, tell the user exactly which one and wait. Never work around a `NO`: `init` refuses an unready machine anyway.
 1. **Brief.** Collect from the user (or from the team's Status Sheet assignment and our funnel):
    - the product name and product photo;
    - 1:1 or localized, and for localized, the target language and market;
@@ -60,7 +61,7 @@ Each login is a folder under `~/.hf-logins/<name>`; the CLI runs with that folde
    - the engine, and for Higgsfield, which login and workspace.
    Never guess any of them, and never fill them from a competitor ad. The product photo must be a local file: the user saves it, or it is copied with rclone.
    `--competitor` takes every competitor brand in the set, comma-separated. An ad can add its own in `ads.json` (`"competitor": "Brand"`).
-   Then run `python adloc.py init <job> --code <CODE> --product "<name>" --product-image <path> --competitor "<their brand>" --currency € --price "€39,95" --offer "..." --guarantee "..." [--lang Dutch --market Netherlands] [--engine higgsfield --hf-login <name> --hf-workspace <id>] [--profile ...]`. A Flow job folder must sit under flow-mcp's `work_root`.
+   Then run `python adloc.py init <CODE> --code <CODE> --product "<name>" --product-image <path> --competitor "<their brand>" --currency € --price "€39,95" --offer "..." --guarantee "..." [--lang Dutch --market Netherlands] [--engine higgsfield --hf-login <name> --hf-workspace <id>] [--profile ...]`. Give the job as its code alone: it lands in flow-mcp's `work_root` (Flow) or `~/ad-static-jobs` (Higgsfield), and `init` prints the full path to use from then on.
 2. **Originals (Meta Ad Library, in a browser tool).**
    - **Provided ads** are the links the team gave. They are used as given, with no reach or niche check. **Researched ads** fill the set up to the profile's size.
    - Search the Ad Library with `country=<market>&media_type=all` and drop videos yourself; `media_type=image` hides most top ads. Skip ads removed for breaking Meta's Advertising Standards.

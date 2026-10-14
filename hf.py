@@ -72,6 +72,21 @@ def cmd_add(a):
         sys.exit("login names: lowercase letters, digits, - and _ (start with a letter or digit)")
     d = LOGINS / a.name
     d.mkdir(parents=True, exist_ok=True)
+    if sys.stdin.isatty():  # a person at the keyboard: walk them through it here
+        print("If your browser is signed in to a DIFFERENT Higgsfield account, sign out at higgsfield.ai "
+              "first: the login takes whatever account the browser holds.")
+        input("Press Enter to open the Higgsfield login in your browser...")
+        subprocess.run([HF, "auth", "login"], env=env_for(a.name))
+        wss, err = call(a.name, "workspace", "list")
+        if not wss:
+            sys.exit(f"login did not finish ({err}) - run python hf.py add {a.name} again")
+        for i, w in enumerate(wss, 1):
+            print(f"  {i}. {w.get('name') or 'Personal'}  ({w['id']})  {w.get('credits') or 0:.0f} credits")
+        pick = wss[0] if len(wss) == 1 else wss[int(input("Which workspace is this login for? Number: ")) - 1]
+        subprocess.run([HF, "workspace", "set", pick["id"]], env=env_for(a.name), capture_output=True)
+        cmd_status(argparse.Namespace(name=a.name))
+        print(f"Use it with: --engine higgsfield --hf-login {a.name} --hf-workspace {pick['id']}")
+        return
     print(f"login folder: {d}\nSign it in yourself, in a NEW terminal window:")
     if os.name == "nt":
         print(f'  $env:HOME="{d}"; $env:USERPROFILE="{d}"\n  higgsfield auth login\n'

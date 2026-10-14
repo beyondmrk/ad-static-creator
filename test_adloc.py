@@ -52,6 +52,7 @@ class Aspects(unittest.TestCase):
 
 class Build(unittest.TestCase):
     def test_replica_build_end_to_end(self):
+        adloc.checks = lambda *a, **k: []  # the machine check has its own test
         with tempfile.TemporaryDirectory() as d, redirect_stdout(StringIO()):
             job = Path(d) / "T-1"
             prod = Path(d) / "prod.png"
@@ -74,6 +75,21 @@ class Build(unittest.TestCase):
         self.assertEqual(line["aspect"], "4:5")
         self.assertIn("same language as the original", line["prompt"])
         self.assertEqual(len(line["refs"]), 2)
+
+
+class Ready(unittest.TestCase):
+    def test_init_refuses_unready_machine(self):
+        real = adloc.checks
+        adloc.checks = lambda *a, **k: [(False, "higgsfield CLI", "python install.py")]
+        try:
+            with tempfile.TemporaryDirectory() as d, self.assertRaises(SystemExit) as cm:
+                adloc.cmd_init(Namespace(job=str(Path(d) / "J"), code="j", product="P", lang=None,
+                                         market=None, engine="higgsfield", hf_login="x", hf_workspace="y",
+                                         product_image=None, competitor="", currency="", price="",
+                                         offer="", guarantee="", profile=None))
+            self.assertIn("not ready", str(cm.exception))
+        finally:
+            adloc.checks = real
 
 
 class HfNames(unittest.TestCase):

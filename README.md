@@ -54,35 +54,36 @@ such as "12 ads a day, 4 provided, the rest researched at 10,000+ reach" live in
 The agent stops for the user's OK before downloading, before any paid fire, and after the
 results, and never re-rolls without being asked. `SKILL.md` has the full checklist.
 
-## Requirements
+## Install (one line, Windows)
 
-| Requirement | What it's for | Required? |
-|---|---|---|
-| [Claude Code](https://claude.com/claude-code) | Runs the skill | yes |
-| Python 3.9+ with `pip install -r requirements.txt` | Pillow and RapidOCR: building, cropping, the text check, the review sheet | yes |
-| **Flow engine:** a Google Flow account, [uv](https://docs.astral.sh/uv/), the `flow-mcp` submodule | Recreating on Flow | one engine |
-| **Higgsfield engine:** `npm install -g @higgsfield/cli` and a Higgsfield account | Recreating on Higgsfield | one engine |
-| A browser tool for the agent | Reading Meta Ad Library pages. Without one, save the images into `01_originals/` by hand | no |
-| rclone | Uploading the delivery | no |
-| ffmpeg, faster-whisper, edge-tts, demucs | The manual video recipe | video only |
-
-## Install
-
-```bash
-git clone --recurse-submodules https://github.com/beyondmrk/ad-static-creator ~/.claude/skills/ad-static-creator
-cd ~/.claude/skills/ad-static-creator
-pip install -r requirements.txt
-python adloc.py doctor
+```powershell
+irm https://raw.githubusercontent.com/beyondmrk/ad-static-creator/main/bootstrap.ps1 | iex
 ```
 
-`doctor` lists what is missing for each engine. Then set up the engine(s) you use:
+It does the whole setup and ends with a check that prints `READY` or exactly what is missing:
+- installs Git, Python, Node, uv and the Higgsfield CLI when they are missing;
+- clones the skill, with the Flow bridge, into `~/.claude/skills/ad-static-creator`;
+- configures the bridge (jobs go in `~/ad-static-jobs`) and registers its MCP server with
+  Claude Code;
+- opens the Flow window and walks you through your first Higgsfield login.
 
-- **Flow:** follow `flow-mcp/README.md` (Edge profile, `config.toml` with `work_root`). Set
-  `FLOW_WORK_ROOT` to the same folder: every Flow job lives inside it, and `init` refuses one
-  that doesn't. Already have flow-mcp somewhere else? Set `FLOW_MCP_DIR` to it.
-- **Higgsfield:** for each account, `python hf.py add <name>`, then sign in and select the
-  workspace in a new terminal as it prints. `python hf.py status` shows every login, its
-  workspace and credits. Logins live in `~/.hf-logins` (`HF_LOGINS` moves them).
+Run the same line again to update. The only steps it can't do for you are the sign-ins: Google
+in the Flow window, and Higgsfield in the browser. To add another Higgsfield account:
+`python hf.py add <name>`.
+
+`init` refuses to start a job until this machine passes the same check, so a half-finished
+install can't produce a half-finished job.
+
+macOS / Linux (Higgsfield engine only, because the Flow bridge needs Windows and Edge):
+```bash
+git clone --recurse-submodules https://github.com/beyondmrk/ad-static-creator ~/.claude/skills/ad-static-creator
+python3 ~/.claude/skills/ad-static-creator/install.py --engine higgsfield
+```
+
+You need your own accounts: Google Flow (stills are free on Google AI Ultra), Higgsfield, or
+both. A browser tool for the agent lets it read Meta Ad Library pages; without one, save the
+images into `01_originals/` by hand. The manual video recipe also needs ffmpeg,
+faster-whisper, edge-tts and demucs.
 
 Then ask Claude Code something like *"recreate these 5 competitor ads 1:1 for our product on
 Higgsfield, login team"* or *"localize these ads into German"* and paste the Ad Library links.
