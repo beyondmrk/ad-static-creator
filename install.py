@@ -91,8 +91,9 @@ def install_flow():
         run(claude, "mcp", "add", "--scope", "user", "flow", "--", "uv", "--directory", FLOW, "run", "flow-mcp")
     print("  opening the Flow window: sign in to Google there if it asks (once per machine)")
     run(*([uv] if isinstance(uv, str) else uv), "run", "--directory", FLOW, "python", "-c",
-        "import sys; sys.path.insert(0, 'src'); from flow_mcp.service import Service; "
-        "s = Service.build().status(); print('  Flow signed in:', s.get('signed_in'), ' captcha:', s.get('captcha'))",
+        "import sys; sys.path.insert(0, 'src'); from flow_mcp.service import Service\n"
+        "try:\n s = Service.build().status(); print('  Flow signed in:', s.get('signed_in'), ' captcha:', s.get('captcha'))\n"
+        "except Exception as e: print('  Flow window not reachable:', str(e).splitlines()[0][:160])",
         check=False)
 
 
