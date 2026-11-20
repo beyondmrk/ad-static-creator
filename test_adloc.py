@@ -100,6 +100,23 @@ class HfNames(unittest.TestCase):
             (s / "claude_t-1_line03.png").touch()
             self.assertEqual(hf.next_name(s, "t-1", "03").name, "claude_t-1_line03_alt2.png")
 
+    def test_board_profile_names_and_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            job = Path(d)
+            (job / "02_localized").mkdir()
+            Image.new("RGB", (64, 64)).save(job / "02_localized" / "01_x.png")
+            (job / "_finish.json").write_text(json.dumps({"01_x.png": ""}))
+            (job / "prof.json").write_text(json.dumps({
+                "delivery_pattern": "{code}_B{set}_A{n:02d}", "upload_folder": "B{set}",
+                "status_value": "For proofreading", "status_template": "{code}_B{set} -> {status}"}))
+            (job / "brief.json").write_text(json.dumps({**BRIEF, "code": "PL1452",
+                                                         "profile": str(job / "prof.json")}))
+            with redirect_stdout(StringIO()) as out:
+                adloc.cmd_deliver(Namespace(job=str(job), use=[], start=1, only=None, accept=[],
+                                            set=3, suffix="", upload=None))
+            self.assertTrue((job / "03_delivery" / "PL1452_B3_A01.png").exists())
+            self.assertIn("PL1452_B3 -> For proofreading", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

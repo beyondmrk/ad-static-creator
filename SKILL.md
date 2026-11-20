@@ -23,9 +23,9 @@ Layout, people, animals, setting, colours, crop, typography and message stay ide
   - **higgsfield**: the Higgsfield CLI on a named login and workspace, fired by `hf.py fire`. Costs credits, and supports 4:5, 5:4, 3:2, 2:3 and 21:9 natively.
 - `adloc.py` (next to this file) assembles every prompt and refuses to move on when a rule breaks. `python adloc.py doctor [<job>]` checks the setup.
 
-## What the output is (the baseline failures, corrected)
+## What the output is
 
-| Agents without this skill did | The job is |
+| Not this | The job is |
 |---|---|
 | Drew "a new dog, a new beach, not a copy" to avoid copying | The same subject, pose and scene. The brief is a 1:1 recreation |
 | Generated a text-free plate, then laid the text on with PIL or HTML | Text generated in place, so it keeps the original's typography. The text check catches misspellings |
@@ -42,7 +42,7 @@ A team with fixed rules sets them in a profile, passed at `init` with `--profile
 - a researched ad needs more than 10,000 reach and the same product or niche;
 - delivery in the team's Drive layout, Status Sheet set to "Ready for Review", a message in the team chat.
 
-Copy it to `profiles/local/<team>.json` (gitignored) and adjust it. `scan` reports and `build` refuses a set that breaks the profile; `--allow-short` works only after the user OKs the gap. With no profile there are no set rules.
+Copy it to `profiles/local/<team>.json` (gitignored) and adjust it. A team that tracks work on a task board instead of a Status Sheet sets `delivery_pattern` (format fields `{code}`, `{set}`, `{n}`, e.g. `{code}_B{set}_A{n:02d}`), `upload_folder` (the subfolder `--upload` creates, default `{code}-S{set}`) and `status_template` (the board step `deliver` prints for the user). `scan` reports and `build` refuses a set that breaks the profile; `--allow-short` works only after the user OKs the gap. With no profile there are no set rules.
 
 ## Higgsfield logins (several accounts side by side)
 
@@ -103,7 +103,7 @@ Each login is a folder under `~/.hf-logins/<name>`; the CLI runs with that folde
 
 `scan` picks the engine's nearest ratio. Flow has 1:1, 3:4, 4:3, 9:16 and 16:9 only; Higgsfield adds 4:5, 5:4, 3:2, 2:3 and 21:9. For a ratio the engine lacks (4:5 on Flow, 1.91:1 on either), `build` pads the reference with blurred bands, the prompt tells the model to extend into them, and `finish` crops the centre back to the exact original ratio.
 
-**The padding method has not yet been checked on a live run.** Compare every padded ad's crop with its original before delivering. On Higgsfield, most Meta ratios need no padding.
+**The padding method is unproven.** Compare every padded ad's crop with its original before delivering. On Higgsfield, most Meta ratios need no padding.
 
 ## Video ads (manual recipe)
 
@@ -113,7 +113,7 @@ The same target applies: a 1:1 replica with only the product and offer changed (
 3. **Translate** (localize mode only) each numbered line into native target-language copy.
 4. **Voiceover.** Generate one mp3 per line with edge-tts (a neural voice for the language, about `rate=+20%`). Spell numbers out for the TTS, then put the digits back in the captions.
 5. **Fit.** Translated speech often runs longer than the original. Stretch each line's footage to fit its voiceover (`setpts=PTS*f`, then `framerate` back to the source fps). Split the music bed out with demucs (`--two-stems vocals`), stretch it to the new length with `atempo`, sit the voice at -18 dB RMS, and `loudnorm` to -14 LUFS.
-6. **Paint.** Cover burned-in captions, prices and CTA buttons, draw ours in the same style, and repaint a legible competitor brand with ours.
+6. **Paint.** Cover burned-in captions, prices and CTA buttons, draw ours in the same style, and repaint a legible competitor brand with ours. **Captions go through `captions.py`: at most 3 words a line, a bigger font (7.5% of frame width), inside the Reels safe zone** (6% sides, 14% top, 35% bottom). Wide captions get cut off when Meta shows the ad as a Reel, and short, large lines stay readable on a phone screen. `captions.check` refuses a longer line; inpaint the competitor's wider caption box instead of painting over it at its old width.
 7. **Deliver.** Mux, then `adloc.py deliver` (which strips mp4 metadata with ffmpeg).
 
 Flag the first video for each team to the user before delivering it.

@@ -34,7 +34,8 @@ ASPECTS = {"flow": ("1:1", "3:4", "4:3", "9:16", "16:9"),
            "higgsfield": ("1:1", "3:2", "2:3", "4:3", "3:4", "4:5", "5:4", "9:16", "16:9", "21:9")}
 DUP_BITS = 70  # dHash Hamming distance (of 256) at or below = same creative
 DEFAULT_PROFILE = {"set_size": 0, "provided_min": 0, "min_reach": 0, "require_niche_note": False,
-                   "delivery_pattern": "{code}-S{set}-A{n}", "status_value": "", "notify_template": ""}
+                   "delivery_pattern": "{code}-S{set}-A{n}", "upload_folder": "{code}-S{set}",
+                   "status_value": "", "status_template": "", "notify_template": ""}
 # money, discounts and bundle maths: a text block like this is an OFFER claim, never plain copy
 OFFER_RE = re.compile(r"[$€£¥]|\d+[.,]\d{2}\b|\d+\s?%|\b(kr|zł|sek|eur|usd|dkk|nok|pln|chf|gbp)\b"
                       r"|\b\d+\s*\+\s*\d+\b|\bgratis\b|\bfree\b|\bgratuit|\bkostenlos|\bomaggio"
@@ -464,7 +465,7 @@ def cmd_deliver(a):
     if held:
         sys.exit("deliver refused - text check not passed (fix, or the user accepts with --accept NN):\n  "
                  + "\n  ".join(held))
-    stem = f"{brief['code']}-S{a.set}"
+    stem = prof["upload_folder"].format(code=brief["code"], set=a.set)
     out = job / "03_delivery"
     tail = f"-{a.suffix}" if a.suffix else ""
     plan = [(s, out / (prof["delivery_pattern"].format(code=brief["code"], set=a.set, n=n)
@@ -499,7 +500,11 @@ def cmd_deliver(a):
         print("\nFeedback fixes: tell the reviewer which ads were corrected: "
               + ", ".join(d.name for _, d in plan))
         return
-    if prof["status_value"]:
+    if prof["status_template"]:
+        print("\nStatus (the user does this): " + prof["status_template"].format(
+            count=len(plan), product=brief["product"], code=brief["code"], set=a.set,
+            status=prof["status_value"]))
+    elif prof["status_value"]:
         print(f"\nStatus Sheet (the user does this): add the {len(plan)} ads for {brief['product']} "
               f"to the Ads table, set Ad Status to \"{prof['status_value']}\".")
     if prof["notify_template"]:
